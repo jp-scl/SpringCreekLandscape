@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Plant Catalog Admin</title>
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 2em; }
+    input, select, button { margin: 0.5em 0; padding: 0.4em; }
+    .table-wrapper {
+      max-height: 500px;
+      overflow-y: auto;
+      overflow-x: auto;
+      margin-top: 1em;
+    }
+    table {
+      border-collapse: collapse;
+      table-layout: auto;
+      min-width: max-content;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 0.5em;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    th {
+      background: #f0f0f0;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      cursor: pointer;
+      user-select: none;
+    }
+    td input[type="number"], td input[type="text"] { width: 60px; }
+    .template-area { margin-top: 2em; }
+    .arrow { margin-left: 5px; font-size: 0.8em; }
+    #uploadError { color: red; font-weight: bold; margin-top: 0.5em; }
+    .export-btn { margin-left: 1em; }
+    #downloadLink { display: block; margin-top: 1em; }
+    a.plant-link { color: blue; text-decoration: underline; }
+    hr { margin: 2em 0; border: none; border-top: 2px solid #ccc; }
+
+    th.select-col, td.select-col {
+      width: 50px;
+      min-width: 50px;
+      max-width: 50px;
+    }
+    th.normal-col, td.normal-col {
+      width: 80px;
+      min-width: 80px;
+      max-width: 80px;
+    }
+    th.double-col, td.double-col {
+      min-width: 140px;
+      max-width: 300px;
+    }
+
+    tr.selected-row {
+      background-color: #e0ffe0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Plant Catalog Admin</h1>
+  <section>
+    <p>Welcome to the Admin Page. To use the tool follow these instructions:</p>
+    <ol>
+      <li>Upload an Excel file containing plant data.</li>
+      <li>Use the search box to filter plants by name.</li>
+      <li>Select plants using the checkboxes.</li>
+      <li>Enter quantity and cost for each selected plant.</li>
+      <li>Find the Total Cost and Plants below the table.</li>
+      <li>Click "Export to Excel" to download the selected plants with total cost.</li>
+    </ol>
+  </section>
+
+  <hr>
+
+  <p>Upload Plant Catalog Excel Sheet:</p>
+  <button onclick="document.getElementById('excelUpload').click()">Upload Plant Excel</button>
+  <input type="file" id="excelUpload" accept=".xlsx, .xls" style="display:none">
+  <div id="uploadError"></div>
+
+  <hr>
+
+  <p>Filter Plants By Name:</p>
+  <input type="text" id="searchInput" placeholder="Search Plants">
+
+  <div class="table-wrapper">
+    <table id="plantTable">
+      <thead>
+        <tr id="tableHeaders"></tr>
+      </thead>
+      <tbody id="plantTableBody"></tbody>
+    </table>
+  </div>
+
+  <hr>
+
+  <div>
+    <h3>Selected Plants</h3>
+    <ul id="selectedList"></ul>
+    <p>Total Cost: $<span id="totalCost">0.00</span></p>
+    <label for="exportFilename">Export File Name:</label>
+    <input type="text" id="exportFilename" placeholder="Template Name">
+    <button onclick="exportSelected()">Export Selected</button>
+    <a id="downloadLink" style="display:none"></a>
+  </div>
+
+  <script>
+    let plantData = [];
+    let selectedPlants = new Set();
+    let plantQuantities = {};
+    let plantCosts = {};
+    let sortColumn = null;
+    let sortDirection = 1;
+
+    document.getElementById("excelUpload").addEventListener("change", handleExcelUpload);
+    document.getElementById("searchInput").addEventListener("input", renderPlants);
+
+    function handleExcelUpload(event) {
+      const file = event.target.files[0];
+      const errorDiv = document.getElementById("uploadError");
+      if (!file) return;
+      if (!file.name.match(/\.(xlsx|xls)$/)) {
+        errorDiv.textContent = "Please select a valid Excel file (.xlsx or .xls).";
+        return;
+      }
+      errorDiv.textContent = "";
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          plantData = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+          if (plantData.length === 0) {
+            throw new Error("No data found in the sheet.");
+          }
+          selectedPlants.clear();
+          plantQuantities = {};
+          plantCosts = {};
+          renderPlants();
+        } catch (err) {
+          errorDiv.textContent = "Error reading file: " + err.message;
+        }
+      };
+      reader.onerror = () => {
+        errorDiv.textContent = "Error reading file.";
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    function renderPlants() {
+      const searchTerm = document.getElementById("searchInput").value.toLowerCase();
+      const tbody = document.getElementById("plantTableBody");
+      tbody.innerHTML = "";
+
+      const headers = plantData.length > 0 ? Object.keys(plantData[0]) : [];
+      const theadRow = document.getElementById("tableHeaders");
+      theadRow.innerHTML = "";
+
+      const selectHeader = document.createElement("th");
+      selectHeader.textContent = "Select";
+      selectHeader.classList.add("select-col");
+      theadRow.appendChild(selectHeader);
+
+      headers.forEach(header => {
+        const th = document.createElement("th");
+        th.textContent = header;
+        th.classList.add([
+          "Zone 4", "Elevation", "Height", "Width", "Xeric", "Native"
+        ].includes(header) ? "normal-col" : "double-col");
+        th.onclick = () => sortByColumn(header);
+        if (header === sortColumn) {
+          const arrow = document.createElement("span");
+          arrow.className = "arrow";
+          arrow.textContent = sortDirection > 0 ? "▲" : "▼";
+          th.appendChild(arrow);
+        }
+        theadRow.appendChild(th);
+      });
+
+      const quantityTh = document.createElement("th");
+      quantityTh.textContent = "Quantity";
+      quantityTh.classList.add("normal-col");
+      theadRow.appendChild(quantityTh);
+
+      const costTh = document.createElement("th");
+      costTh.textContent = "Cost";
+      costTh.classList.add("normal-col");
+      theadRow.appendChild(costTh);
+
+      let filteredIndexes = [];
+      plantData.forEach((row, i) => {
+        // To filter *only* by name, uncomment the line below and comment out the one after it.
+        // const name = (row["Common Name"] || row["Name"] || "").toLowerCase();
+        // if (searchTerm === "" || name.includes(searchTerm)) {
+        if (searchTerm === "" || Object.values(row).some(value => String(value).toLowerCase().includes(searchTerm))) {
+          filteredIndexes.push(i);
+        }
+      });
+
+      if (sortColumn) {
+        filteredIndexes.sort((a, b) => {
+          let valA = plantData[a][sortColumn] ?? "";
+          let valB = plantData[b][sortColumn] ?? "";
+          // Try numeric sort if possible
+          const numA = parseFloat(valA);
+          const numB = parseFloat(valB);
+          if (!isNaN(numA) && !isNaN(numB)) {
+            return (numA - numB) * sortDirection;
+          }
+          return valA.toString().localeCompare(valB.toString()) * sortDirection;
+        });
+      }
+
+      filteredIndexes.forEach(i => {
+        const row = plantData[i];
+        const tr = document.createElement("tr");
+        if (selectedPlants.has(i)) tr.classList.add("selected-row");
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selectedPlants.has(i);
+        checkbox.onchange = () => {
+          if (checkbox.checked) {
+            selectedPlants.add(i);
+            tr.classList.add("selected-row");
+          } else {
+            selectedPlants.delete(i);
+            tr.classList.remove("selected-row");
+          }
+          updateSelected();
+        };
+        const tdCheckbox = document.createElement("td");
+        tdCheckbox.appendChild(checkbox);
+        tdCheckbox.classList.add("select-col");
+        tr.appendChild(tdCheckbox);
+
+        headers.forEach(key => {
+          const td = document.createElement("td");
+          td.classList.add([
+            "Zone 4", "Elevation", "Height", "Width", "Xeric", "Native"
+          ].includes(key) ? "normal-col" : "double-col");
+          if (key.toLowerCase().includes("common")) {
+            const a = document.createElement("a");
+            a.href = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(row[key])}`;
+            a.textContent = row[key];
+            a.target = "_blank";
+            a.className = "plant-link";
+            td.appendChild(a);
+          } else {
+            td.textContent = row[key];
+          }
+          tr.appendChild(td);
+        });
+
+        const qtyTd = document.createElement("td");
+        const qtyInput = document.createElement("input");
+        qtyInput.type = "number";
+        qtyInput.min = 0;
+        qtyInput.value = plantQuantities[i] !== undefined ? plantQuantities[i] : 0;
+        qtyInput.oninput = () => {
+          plantQuantities[i] = Number(qtyInput.value) || 0;
+          updateSelected();
+        };
+        qtyTd.appendChild(qtyInput);
+        qtyTd.classList.add("normal-col");
+        tr.appendChild(qtyTd);
+
+        const costTd = document.createElement("td");
+        const costInput = document.createElement("input");
+        costInput.type = "number";
+        costInput.min = 0;
+        costInput.step = "0.01";
+        costInput.value = plantCosts[i] !== undefined ? plantCosts[i] : 0;
+        costInput.oninput = () => {
+          plantCosts[i] = Number(costInput.value) || 0;
+          updateSelected();
+        };
+        costTd.appendChild(costInput);
+        costTd.classList.add("normal-col");
+        tr.appendChild(costTd);
+
+        tbody.appendChild(tr);
+      });
+
+      updateSelected();
+    }
+
+    function updateSelected() {
+      const list = document.getElementById("selectedList");
+      list.innerHTML = "";
+      let total = 0;
+
+      selectedPlants.forEach(i => {
+        const plant = plantData[i];
+        const qty = plantQuantities[i] || 0;
+        const cost = plantCosts[i] || 0;
+        const itemTotal = qty * cost;
+        total += itemTotal;
+
+        const li = document.createElement("li");
+        li.textContent = `${plant["Common Name"] || plant["Name"] || "Unnamed"} - Quantity: ${qty}, Cost: $${cost.toFixed(2)}, Total: $${itemTotal.toFixed(2)}`;
+        list.appendChild(li);
+      });
+
+      document.getElementById("totalCost").textContent = total.toFixed(2);
+    }
+
+    function exportSelected() {
+  const filename = (document.getElementById("exportFilename").value || "plants_export") + ".xlsx";
+  if (selectedPlants.size === 0) {
+    alert("No plants selected to export.");
+    return;
+  }
+
+  const exportRows = [];
+  let totalCost = 0;
+  const baseKeys = Object.keys(plantData[0] || {});
+
+  selectedPlants.forEach(i => {
+    const row = plantData[i];
+    const rowCopy = {...row};
+    const qty = plantQuantities[i] || 0;
+    const cost = plantCosts[i] || 0;
+    rowCopy["Quantity"] = qty;
+    rowCopy["Cost"] = cost;
+    rowCopy["Total"] = qty * cost;
+    exportRows.push(rowCopy);
+    totalCost += qty * cost;
+  });
+
+  // Add total row
+  const totalRow = {};
+  baseKeys.forEach(key => totalRow[key] = "");
+  totalRow["Quantity"] = "";
+  totalRow["Cost"] = "";
+  totalRow["Total"] = totalCost;
+  totalRow[baseKeys[0]] = "Total Cost";
+  exportRows.push(totalRow);
+
+  const worksheet = XLSX.utils.json_to_sheet(exportRows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "SelectedPlants");
+  
+  // Use base64 instead of array/Blob
+  const wbout = XLSX.write(workbook, { bookType: "xlsx", type: "base64" });
+  const dataUri = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + wbout;
+
+  const a = document.getElementById("downloadLink");
+  a.href = dataUri;
+  a.download = filename;
+  a.click();
+  // No revoke needed for data URIs
+}
+
+    function sortByColumn(col) {
+      if (sortColumn === col) {
+        sortDirection = -sortDirection;
+      } else {
+        sortColumn = col;
+        sortDirection = 1;
+      }
+      renderPlants();
+    }
+  </script>
+</body>
+</html>
